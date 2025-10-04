@@ -2,9 +2,12 @@
 
 A C++ application for fun, providing low-level access to a couple of interesting exposed registers documented in the Juno r1 Technical Reference Manual.
 
+Example AXI Slave port RTL to demonstrate integration of peripherals within the AN415 memory subsystem is supplied, and this is shown to be programmable from Linux userspace with example code.
+
 ## Features
 
-- **Hardware Register Access**: Direct memory-mapped I/O access to Juno board registers, including example code that utilises a spare AXI Slave port on the CoreLink-NIC400 [ThinLinks]. Example RTL for this to follow.
+- **Hardware Register Access**: Direct memory-mapped I/O access to Juno board registers, including example code that utilises a spare AXI Slave port on the CoreLink-NIC400 (ThinLinks). 
+- **AXI Slave Port Example RTL**: An AXI Compliant slave-port implementation is supplied alongside a memory-mapped LFSR peripheral. 
 - **Board Information**: System identification and hardware version detection
 
 ## Hardware Support
@@ -15,6 +18,15 @@ This project targets any revision of the ARM Juno development board, as well as 
 
 - ARM Juno development board
 - Linux build environment with root access and GCC/LLVM
+
+## Project Structure
+
+```
+- reg-test.cpp (This program)
+- rtl
+   |- sim (Testbench for AXI Slave)
+   |- src (Synthesisable RTL for AXI Slave)
+```
 
 ## Building
 
@@ -31,6 +43,8 @@ make clean
 
 ## Usage
 
+## Software
+
 The program requires root privileges to access `/dev/mem` for hardware register access:
 
 ```bash
@@ -44,11 +58,23 @@ sudo ./reg-test -v -l -r
 ./reg-test -h
 ```
 
+## Hardware
+
+Any interaction with the RNG peripheral on the AXI Slave Port mapping requires the corresponding RTL to be patched into the Arm-supplied [AN415](https://developer.arm.com/downloads/view/VEJ20)
+FPGA top level wrapper. 
+
+1. Replace the `EgSlaveAxi` module in `an414_toplevel.v` with an instantiation of the `rng_axi_slave` module supplied at `rtl/src`. The ports are the exact same, excluding 
+some buses that were tied off (`SCAN<X>, C<ACTIVE/SYS>` etc) - these can be safely removed from the instantiation.
+2. Run behavioural simulation of the `rng_axi_slave_tb` and ensure all tests pass.
+3. Synthesise the design and generate the bitfile, then replace `SITE2/HBI0247C/AN415/a415r0p1.bit` on the configuration micro-SD card with your updated version.
+4. Reboot the Juno, and the bitfile should successfully be programmed.
+
+
 ### Command Line Options
 
 - `-v`: Enable verbose logging of register accesses
 - `-l`: Run LED test sequence with various animation patterns
-- `-r`: Run RNG test sequence
+- `-r`: Run RNG test sequence, testing a peripheral at the base of the new AXI Slave port
 - `-h`: Display help message
 
 ## Key Components
