@@ -18,6 +18,7 @@
 // Additional Comments:
 // 
 //////////////////////////////////////////////////////////////////////////////////
+`timescale 1ns / 1ps
 
 module axi_rng_slave (
     // Global signals
@@ -73,8 +74,22 @@ module axi_rng_slave (
     reg  [31:0] latched_araddr;
     reg  [15:0] latched_awid;
     reg  [31:0] latched_awaddr;
-    reg         write_addr_valid;
-    reg         write_data_valid;
+    reg  [31:0] latched_wdata;
+    reg  [7:0]  latched_wstrb;
+
+    // State machine states
+    reg [1:0] read_state;
+    reg [2:0] write_state;
+
+    localparam READ_IDLE     = 2'b00;
+    localparam READ_DECODE   = 2'b01;
+    localparam READ_RESPOND  = 2'b10;
+
+    localparam WRITE_IDLE    = 3'b000;
+    localparam WRITE_ADDR    = 3'b001;
+    localparam WRITE_DATA    = 3'b010;
+    localparam WRITE_EXEC    = 3'b011;
+    localparam WRITE_RESP    = 3'b100;
 
     // RNG instance
     lfsr u_rng (
@@ -84,128 +99,218 @@ module axi_rng_slave (
         .random_data(random_data)
     );
 
-    // Read channel logic
+    //=========================================================================
+    // READ CHANNEL STATE MACHINE
+    //=========================================================================
     always @(posedge ACLK or negedge ARESETn) begin
         if (!ARESETn) begin
-            ARREADY      <= 1'b0;
-            RID          <= 16'h0;
-            RDATA        <= 32'h0;
-            RRESP        <= 2'b00;
-            RLAST        <= 1'b0;
-            RVALID       <= 1'b0;
-            latched_arid <= 16'h0;
+            ARREADY        <= 1'b0;
+            RID            <= 16'h0;
+            RDATA          <= 32'h0;
+            RRESP          <= 2'b00;
+            RLAST          <= 1'b0;
+            RVALID         <= 1'b0;
+            latched_arid   <= 16'h0;
             latched_araddr <= 32'h0;
-            read_count   <= 32'h0;
+            read_count     <= 32'h0;
+            read_state     <= READ_IDLE;
         end else begin
-            // Accept read address and latch ID and address
-            if (ARVALID && !ARREADY) begin
-                ARREADY        <= 1'b1;
-                latched_arid   <= ARID;
-                latched_araddr <= ARADDR;
-            end else begin
-                ARREADY <= 1'b0;
-            end
+            case (read_state)
+                READ_IDLE: begin
+                    ARREADY <= 1'b0;
+                    RVALID  <= 1'b0;
+                    RLAST   <= 1'b0;
 
-            // Provide read data with address decoding
-            if (ARREADY && !RVALID) begin
-                RID    <= latched_arid;
-                RLAST  <= 1'b1;
-                RVALID <= 1'b1;
+                    if (ARVALID) begin
+                        // Accept address
+                        ARREADY        <= 1'b1;
+                        latched_arid   <= ARID;
+                        latched_araddr <= ARADDR;
+                        read_state     <= READ_DECODE;
+                    end
+                end
 
-                // Address decode - only look at low address bits
-                case (latched_araddr[7:2]) // Word-aligned addresses
-                    6'h00: begin // 0x000: RNG data register
-                        RDATA <= random_data;
-                        RRESP <= 2'b00; // OKAY
-                        read_count <= read_count + 1;
-                    end
-                    6'h01: begin // 0x004: Control register
-                        RDATA <= control_reg;
-                        RRESP <= 2'b00; // OKAY
-                    end
-                    6'h02: begin // 0x008: Seed register
-                        RDATA <= seed_reg;
-                        RRESP <= 2'b00; // OKAY
-                    end
-                    6'h03: begin // 0x00C: Read counter
-                        RDATA <= read_count;
-                        RRESP <= 2'b00; // OKAY
-                    end
-                    default: begin // Unmapped addresses
+                READ_DECODE: begin
+                    ARREADY <= 1'b0;
+
+                    // Decode address and prepare response
+                    RID   <= latched_arid;
+                    RLAST <= 1'b1;
+
+                    // Check if address is within valid range (0x000-0x00F)
+                    if (latched_araddr[23:4] == 4'h0) begin
+                        case (latched_araddr[3:2])
+                            2'h0: begin // 0x000: RNG data
+                                RDATA <= random_data;
+                                RRESP <= 2'b00;
+                                read_count <= read_count + 32'd1;
+                            end
+                            2'h1: begin // 0x004: Control register
+                                RDATA <= control_reg;
+                                RRESP <= 2'b00;
+                            end
+                            2'h2: begin // 0x008: Seed register
+                                RDATA <= seed_reg;
+                                RRESP <= 2'b00;
+                            end
+                            2'h3: begin // 0x00C: Read counter
+                                RDATA <= read_count;
+                                RRESP <= 2'b00;
+                            end
+                        endcase
+                    end else begin
+                        // Out of range - return error
                         RDATA <= 32'hDEADBEEF;
-                        RRESP <= 2'b10; // SLVERR - Slave error
+                        RRESP <= 2'b10; // SLVERR
                     end
-                endcase
-            end else if (RVALID && RREADY) begin
-                RVALID <= 1'b0;
-                RLAST  <= 1'b0;
-            end
-        end
-    end
-       
-    // Write channel logic
-    always @(posedge ACLK or negedge ARESETn) begin
-    if (!ARESETn) begin
-        AWREADY          <= 1'b0;
-        WREADY           <= 1'b0;
-        BID              <= 16'h0;
-        BRESP            <= 2'b00;
-        BVALID           <= 1'b0;
-        latched_awid     <= 16'h0;
-        latched_awaddr   <= 32'h0;
-        write_addr_valid <= 1'b0;
-        write_data_valid <= 1'b0;
-        control_reg      <= 32'h0;
-        seed_reg         <= 32'hACE1;
-    end else begin
-        // Always accept address when valid
-        if (AWVALID && !write_addr_valid) begin
-            AWREADY        <= 1'b1;
-            latched_awid   <= AWID;
-            latched_awaddr <= AWADDR;
-            write_addr_valid <= 1'b1;
-        end else begin
-            AWREADY <= 1'b0;
-        end
-        
-        // Always accept data when valid  
-        if (WVALID && !write_data_valid) begin
-            WREADY <= 1'b1;
-            write_data_valid <= 1'b1;
-        end else begin
-            WREADY <= 1'b0;
-        end
-        
-        // When both are valid, perform the write
-        if (write_addr_valid && write_data_valid && !BVALID) begin
-            // Perform write based on address
-            case (latched_awaddr[7:2])
-                6'h01: begin  // Control register
-                    if (WSTRB[0]) control_reg[7:0]   <= WDATA[7:0];
-                    if (WSTRB[1]) control_reg[15:8]  <= WDATA[15:8];
-                    if (WSTRB[2]) control_reg[23:16] <= WDATA[23:16];
-                    if (WSTRB[3]) control_reg[31:24] <= WDATA[31:24];
-                    BRESP <= 2'b00;
+
+                    RVALID     <= 1'b1;
+                    read_state <= READ_RESPOND;
                 end
-                6'h02: begin  // Seed register
-                    if (WSTRB[0]) seed_reg[7:0]   <= WDATA[7:0];
-                    if (WSTRB[1]) seed_reg[15:8]  <= WDATA[15:8];
-                    if (WSTRB[2]) seed_reg[23:16] <= WDATA[23:16];
-                    if (WSTRB[3]) seed_reg[31:24] <= WDATA[31:24];
-                    BRESP <= 2'b00;
+
+                READ_RESPOND: begin
+                    if (RREADY) begin
+                        // Master accepted data
+                        RVALID     <= 1'b0;
+                        RLAST      <= 1'b0;
+                        read_state <= READ_IDLE;
+                    end
+                    // Otherwise stay in this state until master is ready
                 end
-                6'h00, 6'h03: BRESP <= 2'b00;  // Read-only, but respond OK
-                default: BRESP <= 2'b10;  // SLVERR
+
+                default: begin
+                    read_state <= READ_IDLE;
+                end
             endcase
-            
-            BID    <= latched_awid;
-            BVALID <= 1'b1;
-            write_addr_valid <= 1'b0;
-            write_data_valid <= 1'b0;
-        end else if (BVALID && BREADY) begin
-            BVALID <= 1'b0;
         end
     end
-end
+
+    //=========================================================================
+    // WRITE CHANNEL STATE MACHINE
+    //=========================================================================
+    always @(posedge ACLK or negedge ARESETn) begin
+        if (!ARESETn) begin
+            AWREADY        <= 1'b0;
+            WREADY         <= 1'b0;
+            BID            <= 16'h0;
+            BRESP          <= 2'b00;
+            BVALID         <= 1'b0;
+            latched_awid   <= 16'h0;
+            latched_awaddr <= 32'h0;
+            latched_wdata  <= 32'h0;
+            latched_wstrb  <= 8'h0;
+            control_reg    <= 32'h0;
+            seed_reg       <= 32'hACE1;
+            write_state    <= WRITE_IDLE;
+        end else begin
+            case (write_state)
+                WRITE_IDLE: begin
+                    AWREADY <= 1'b0;
+                    WREADY  <= 1'b0;
+                    BVALID  <= 1'b0;
+
+                    // Wait for either address or data first
+                    if (AWVALID && WVALID) begin
+                        // Both arrive together
+                        AWREADY        <= 1'b1;
+                        WREADY         <= 1'b1;
+                        latched_awid   <= AWID;
+                        latched_awaddr <= AWADDR;
+                        latched_wdata  <= WDATA;
+                        latched_wstrb  <= WSTRB;
+                        write_state    <= WRITE_EXEC;
+                    end else if (AWVALID) begin
+                        // Address arrives first
+                        AWREADY        <= 1'b1;
+                        latched_awid   <= AWID;
+                        latched_awaddr <= AWADDR;
+                        write_state    <= WRITE_DATA;
+                    end else if (WVALID) begin
+                        // Data arrives first
+                        WREADY        <= 1'b1;
+                        latched_wdata <= WDATA;
+                        latched_wstrb <= WSTRB;
+                        write_state   <= WRITE_ADDR;
+                    end
+                end
+
+                WRITE_ADDR: begin
+                    // Waiting for address (already have data)
+                    WREADY <= 1'b0;
+
+                    if (AWVALID) begin
+                        AWREADY        <= 1'b1;
+                        latched_awid   <= AWID;
+                        latched_awaddr <= AWADDR;
+                        write_state    <= WRITE_EXEC;
+                    end
+                end
+
+                WRITE_DATA: begin
+                    // Waiting for data (already have address)
+                    AWREADY <= 1'b0;
+
+                    if (WVALID) begin
+                        WREADY        <= 1'b1;
+                        latched_wdata <= WDATA;
+                        latched_wstrb <= WSTRB;
+                        write_state   <= WRITE_EXEC;
+                    end
+                end
+
+                WRITE_EXEC: begin
+                    // Execute the write
+                    AWREADY <= 1'b0;
+                    WREADY  <= 1'b0;
+
+                    // Check if address is within valid range (0x000-0x00F)
+                    if (latched_awaddr[23:4] == 4'h0) begin
+                        case (latched_awaddr[3:2])
+                            2'h0: begin // 0x000: RNG data (read-only)
+                                BRESP <= 2'b00; // OKAY but ignored
+                            end
+                            2'h1: begin // 0x004: Control register
+                                if (latched_wstrb[0]) control_reg[7:0]   <= latched_wdata[7:0];
+                                if (latched_wstrb[1]) control_reg[15:8]  <= latched_wdata[15:8];
+                                if (latched_wstrb[2]) control_reg[23:16] <= latched_wdata[23:16];
+                                if (latched_wstrb[3]) control_reg[31:24] <= latched_wdata[31:24];
+                                BRESP <= 2'b00;
+                            end
+                            2'h2: begin // 0x008: Seed register
+                                if (latched_wstrb[0]) seed_reg[7:0]   <= latched_wdata[7:0];
+                                if (latched_wstrb[1]) seed_reg[15:8]  <= latched_wdata[15:8];
+                                if (latched_wstrb[2]) seed_reg[23:16] <= latched_wdata[23:16];
+                                if (latched_wstrb[3]) seed_reg[31:24] <= latched_wdata[31:24];
+                                BRESP <= 2'b00;
+                            end
+                            2'h3: begin // 0x00C: Read counter (read-only)
+                                BRESP <= 2'b00; // OKAY but ignored
+                            end
+                        endcase
+                    end else begin
+                        // Out of range - return error
+                        BRESP <= 2'b10; // SLVERR
+                    end
+
+                    BID         <= latched_awid;
+                    BVALID      <= 1'b1;
+                    write_state <= WRITE_RESP;
+                end
+
+                WRITE_RESP: begin
+                    if (BREADY) begin
+                        // Master accepted response
+                        BVALID      <= 1'b0;
+                        write_state <= WRITE_IDLE;
+                    end
+                    // Otherwise stay in this state
+                end
+
+                default: begin
+                    write_state <= WRITE_IDLE;
+                end
+            endcase
+        end
+    end
 
 endmodule

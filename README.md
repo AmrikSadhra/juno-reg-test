@@ -1,6 +1,6 @@
 # ARM Juno Register Test
 
-A C++ application for fun, providing low-level access to a couple of interesting exposed registers documented in the Juno r1 Technical Reference Manual.
+A quick and fun demo project providing low-level access to a couple of interesting exposed registers documented in the Juno r1 Technical Reference Manual.
 
 Example AXI Slave port RTL to demonstrate integration of peripherals within the AN415 memory subsystem is supplied, and this is shown to be programmable from Linux userspace with example code.
 
@@ -17,7 +17,7 @@ This project targets any revision of the ARM Juno development board, as well as 
 ## Prerequisites
 
 - ARM Juno development board
-- Linux build environment with root access and GCC/LLVM
+- Linux C++ build environment with root access 
 
 ## Project Structure
 
@@ -43,6 +43,17 @@ make clean
 
 ## Usage
 
+## Hardware
+
+Any interaction with the RNG peripheral on the AXI Slave Port mapping requires the corresponding RTL to be patched into the Arm-supplied [AN415](https://developer.arm.com/downloads/view/VEJ20)
+FPGA top level wrapper. 
+
+1. Replace the `EgSlaveAxi` module in `an414_toplevel.v` with an instantiation of the `rng_axi_slave` module supplied at `rtl/src`. The ports are the exact same, excluding 
+some buses that were tied off (`SCAN<X>, C<ACTIVE/SYS>` etc) - these can be safely removed from the instantiation.
+2. Run behavioural simulation of the `rng_axi_slave_tb` and ensure all tests pass.
+3. Synthesise the design and generate the bitfile, then replace `SITE2/HBI0247C/AN415/a415r0p1.bit` on the configuration micro-SD card with your updated version.
+4. Reboot the Juno, and the bitfile should successfully be programmed.
+
 ## Software
 
 The program requires root privileges to access `/dev/mem` for hardware register access:
@@ -57,18 +68,6 @@ sudo ./reg-test -v -l -r
 # Display help
 ./reg-test -h
 ```
-
-## Hardware
-
-Any interaction with the RNG peripheral on the AXI Slave Port mapping requires the corresponding RTL to be patched into the Arm-supplied [AN415](https://developer.arm.com/downloads/view/VEJ20)
-FPGA top level wrapper. 
-
-1. Replace the `EgSlaveAxi` module in `an414_toplevel.v` with an instantiation of the `rng_axi_slave` module supplied at `rtl/src`. The ports are the exact same, excluding 
-some buses that were tied off (`SCAN<X>, C<ACTIVE/SYS>` etc) - these can be safely removed from the instantiation.
-2. Run behavioural simulation of the `rng_axi_slave_tb` and ensure all tests pass.
-3. Synthesise the design and generate the bitfile, then replace `SITE2/HBI0247C/AN415/a415r0p1.bit` on the configuration micro-SD card with your updated version.
-4. Reboot the Juno, and the bitfile should successfully be programmed.
-
 
 ### Command Line Options
 
